@@ -57,10 +57,11 @@ def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
     return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
 
 
+@pytest.mark.parametrize("samesite", ["None", "none", "NONE"])
 def test_samesite_none_without_secure_exits_and_names_both_keys(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, samesite: str
 ) -> None:
-    initializer = _make_initializer(samesite="None", secure=False)
+    initializer = _make_initializer(samesite=samesite, secure=False)
     with (
         caplog.at_level(logging.WARNING, logger="superset.initialization"),
         patch("superset.initialization.is_test", return_value=False),
