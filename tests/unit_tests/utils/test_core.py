@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Optional
 from unittest.mock import MagicMock, patch
@@ -26,6 +27,7 @@ from flask import current_app
 from pandas.api.types import is_datetime64_dtype
 from pytest_mock import MockerFixture
 
+import superset
 from superset.exceptions import SupersetException
 from superset.utils.core import (
     build_email_attachment,
@@ -1963,6 +1965,133 @@ def test_sanitize_svg_content_removes_unterminated_script():
     result = sanitize_svg_content(malicious_svg)
     assert "script" not in result.lower()
     assert "alert" not in result
+
+
+SVG_SPLICED_JAVASCRIPT_INPUTS = [
+    '<svg><a xlink:href="javajavascript:script:alert(1)"><text>x</text></a></svg>',
+    '<svg><iframe src="javajavascript:script:alert(1)"></svg>',
+]
+
+
+@pytest.mark.parametrize("malicious_svg", SVG_SPLICED_JAVASCRIPT_INPUTS)
+def test_sanitize_svg_content_does_not_reassemble_javascript_url(malicious_svg):
+    """Removing a substring must never splice a new ``javascript:`` into place."""
+    result = sanitize_svg_content(malicious_svg)
+    assert "javascript:" not in result.lower()
+    assert "alert" not in result
+
+
+def test_sanitize_svg_content_removes_animated_event_handler():
+    """SMIL ``<set attributeName="onload">`` has no ``=`` for a regex to catch."""
+    malicious_svg = '<svg><set attributeName="onload" to="alert(1)"/></svg>'
+    result = sanitize_svg_content(malicious_svg)
+    assert "onload" not in result.lower()
+    assert "alert" not in result
+
+
+def test_sanitize_svg_content_removes_entity_encoded_javascript_url():
+    """``javascript&#58;`` decodes to ``javascript:`` in the browser."""
+    malicious_svg = (
+        '<svg><animate attributeName="href" values="javascript&#58;alert(1)"/></svg>'
+    )
+    result = sanitize_svg_content(malicious_svg)
+    assert "javascript" not in result.lower()
+    assert "&#58;" not in result
+    assert "alert" not in result
+
+
+def test_sanitize_svg_content_removes_foreign_object_with_content():
+    """``<foreignObject>`` is dropped together with the HTML/text it wraps."""
+    malicious_svg = "<svg><foreignObject>PWNED TEXT</foreignObject></svg>"
+    result = sanitize_svg_content(malicious_svg)
+    assert "foreignobject" not in result.lower()
+    assert "PWNED TEXT" not in result
+
+    malicious_svg = (
+        "<svg><foreignObject><img src=x oonnerrornerror=alert(1)></foreignObject></svg>"
+    )
+    result = sanitize_svg_content(malicious_svg)
+    assert "foreignobject" not in result.lower()
+    assert "img" not in result.lower()
+    assert "alert" not in result
+
+
+@pytest.mark.parametrize(
+    "svg",
+    [
+        *SVG_SPLICED_JAVASCRIPT_INPUTS,
+        '<svg><set attributeName="onload" to="alert(1)"/></svg>',
+        '<svg><animate attributeName="href" values="javascript&#58;alert(1)"/></svg>',
+        "<svg><foreignObject>PWNED TEXT</foreignObject></svg>",
+        '<svg><rect width="10" height="10"/></svg>',
+        '<svg><script>alert("xss")</script><rect/></svg>',
+        "<svg><script>fetch('/api/v1/me/')</script foo></svg>",
+        "<svg><script>alert('xss')",
+    ],
+)
+def test_sanitize_svg_content_is_idempotent(svg):
+    once = sanitize_svg_content(svg)
+    assert sanitize_svg_content(once) == once
+
+
+def test_sanitize_svg_content_preserves_static_svg():
+    """Static shapes and their presentation attributes survive intact."""
+    safe_svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+        "<title>Logo</title>"
+        '<g fill="none" stroke="#123456" stroke-width="2">'
+        '<circle cx="50" cy="50" r="40" fill="red"/>'
+        '<path d="M10 10 L90 90"/>'
+        "</g></svg>"
+    )
+    result = sanitize_svg_content(safe_svg)
+    for token in (
+        'viewBox="0 0 100 100"',
+        "<title>Logo</title>",
+        '<g fill="none" stroke="#123456" stroke-width="2">',
+        '<circle cx="50" cy="50" r="40" fill="red">',
+        '<path d="M10 10 L90 90">',
+    ):
+        assert token in result
+
+
+def test_sanitize_svg_content_preserves_default_spinner():
+    """The shipped animated brand spinner must survive with its animation intact."""
+    spinner_path = os.path.join(
+        os.path.dirname(superset.__file__), "templates", "superset", "loading.svg"
+    )
+    with open(spinner_path, encoding="utf-8") as fp:
+        spinner = fp.read()
+    result = sanitize_svg_content(spinner)
+
+    for tag in ("svg", "defs", "filter", "feDropShadow", "path", "animate", "use"):
+        assert f"<{tag}" in result, tag
+        assert result.count(f"<{tag}") == spinner.count(f"<{tag}"), tag
+
+    for token in (
+        'id="shadow1"',
+        'id="morphPath"',
+        'href="#morphPath"',
+        'filter="url(#shadow1)"',
+        'attributeName="d"',
+        'attributeName="stroke-dashoffset"',
+        'keyTimes="0;0.1;0.2;0.4;0.5;0.6;0.7;0.9;1"',
+        'dur="8s"',
+        'dur=".8s"',
+        'repeatCount="indefinite"',
+        'flood-color="rgba(0,0,0,0.3)"',
+        'stdDeviation="2"',
+        'stroke-dasharray="108 10"',
+        'from="0"',
+        'to="130"',
+    ):
+        assert token in result, token
+
+    # every ``values`` keyframe list is carried over verbatim
+    assert re.findall(r"values='([^']*)'", spinner) == re.findall(
+        r'values="([^"]*)"', result
+    )
+    assert sanitize_svg_content(result) == result
 
 
 def test_sanitize_url_relative():
