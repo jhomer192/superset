@@ -216,6 +216,11 @@ class ChangeRecord:
 
 
 Key = str | int
+# A natural key may carry refinements: ``(primary, secondary, ...)``. The
+# primary component alone identifies the item unless it collides with
+# another item on the same side of the diff, in which case successive
+# components are appended until the key is unique (see ``_resolve_keys``).
+NaturalKey = Key | tuple[Key, ...]
 
 
 def _value_bytes(value: Any) -> int:
@@ -399,12 +404,103 @@ def _recursive_leaf_diff(
     return _walk(pre, post, path_prefix, 0)
 
 
+def _normalize_key(raw: NaturalKey | None) -> tuple[Key, ...] | None:
+    """Coerce a ``key_fn`` result to a component tuple, or ``None`` if the
+    primary component is missing or empty."""
+    components = raw if isinstance(raw, tuple) else (raw,)
+    if not components or components[0] is None or components[0] == "":
+        return None
+    return tuple(c for c in components if c is not None)
+
+
+def _resolve_keys(
+    from_list: list[Any],
+    to_list: list[Any],
+    key_fn: Callable[[Any], NaturalKey | None],
+) -> tuple[list[Key], list[Key]]:
+    """Compute one effective key per item on each side.
+
+    Items without a natural key take their position. Items whose primary
+    component is unique on both sides keep it verbatim, so the common case
+    is unaffected by the refinement machinery. When two items on the same
+    side share a primary component, every item carrying that component (on
+    either side, so the two sides stay comparable) extends its key with the
+    next refinement component, repeating until the keys are unique or the
+    components run out; any duplicates left after that are numbered in
+    order of appearance so no item is ever silently dropped.
+    """
+    sides = [
+        [_normalize_key(key_fn(item)) for item in from_list],
+        [_normalize_key(key_fn(item)) for item in to_list],
+    ]
+    depth = _resolve_key_depths(sides)
+    from_keys, to_keys = (_effective_keys(side, depth) for side in sides)
+    return from_keys, to_keys
+
+
+def _resolve_key_depths(
+    sides: list[list[tuple[Key, ...] | None]],
+) -> dict[tuple[Key, ...], int]:
+    """Number of leading components each natural key needs to be unique
+    within every side (bounded by the key's length)."""
+    depth: dict[tuple[Key, ...], int] = {
+        key: 1 for side in sides for key in side if key is not None
+    }
+    while True:
+        colliding: set[tuple[Key, ...]] = set()
+        for side in sides:
+            colliding |= _duplicate_prefixes(side, depth)
+        extendable = [
+            k for k in depth if k[: depth[k]] in colliding and depth[k] < len(k)
+        ]
+        if not extendable:
+            return depth
+        for k in extendable:
+            depth[k] += 1
+
+
+def _duplicate_prefixes(
+    side: list[tuple[Key, ...] | None], depth: dict[tuple[Key, ...], int]
+) -> set[tuple[Key, ...]]:
+    seen: set[tuple[Key, ...]] = set()
+    duplicates: set[tuple[Key, ...]] = set()
+    for key in side:
+        if key is not None:
+            prefix = key[: depth[key]]
+            if prefix in seen:
+                duplicates.add(prefix)
+            seen.add(prefix)
+    return duplicates
+
+
+def _effective_keys(
+    side: list[tuple[Key, ...] | None], depth: dict[tuple[Key, ...], int]
+) -> list[Key]:
+    """Render one side's keys: position for keyless items, the primary
+    component verbatim when it suffices, a ``|``-joined prefix otherwise,
+    and an ordinal suffix for any duplicates that remain."""
+    ordinals: dict[Key, int] = {}
+    keys: list[Key] = []
+    for idx, key in enumerate(side):
+        if key is None:
+            keys.append(idx)
+            continue
+        prefix = key[: depth[key]]
+        effective: Key = (
+            prefix[0] if len(prefix) == 1 else "|".join(str(c) for c in prefix)
+        )
+        n = ordinals.get(effective, 0)
+        ordinals[effective] = n + 1
+        keys.append(f"{effective}|{n}" if n else effective)
+    return keys
+
+
 def _diff_list_by_natural_key(
     kind: str,
     path_prefix: list[Any],
     from_list: list[Any] | None,
     to_list: list[Any] | None,
-    key_fn: Callable[[Any], Key | None],
+    key_fn: Callable[[Any], NaturalKey | None],
 ) -> list[ChangeRecord]:
     """Diff two lists, matching elements by natural key.
 
@@ -412,22 +508,16 @@ def _diff_list_by_natural_key(
     ``None`` for an item (natural key missing or empty), the item falls
     back to its position as a synthetic key — so insertions in the
     middle of a keyless list still produce sensible records, at the
-    cost of position-dependent identity.
+    cost of position-dependent identity. ``key_fn`` may return a tuple
+    of refinement components; see ``_resolve_keys`` for how colliding
+    natural keys are disambiguated.
     """
     from_list = from_list or []
     to_list = to_list or []
 
-    def _effective_key(raw: Key | None, idx: int) -> Key:
-        if raw is None or raw == "":
-            return idx
-        return raw
-
-    from_by_key: dict[Key, Any] = {}
-    for idx, item in enumerate(from_list):
-        from_by_key[_effective_key(key_fn(item), idx)] = item
-    to_by_key: dict[Key, Any] = {}
-    for idx, item in enumerate(to_list):
-        to_by_key[_effective_key(key_fn(item), idx)] = item
+    from_keys, to_keys = _resolve_keys(from_list, to_list, key_fn)
+    from_by_key: dict[Key, Any] = dict(zip(from_keys, from_list, strict=True))
+    to_by_key: dict[Key, Any] = dict(zip(to_keys, to_list, strict=True))
 
     records: list[ChangeRecord] = []
     # Preserve `from` order then append `to`-only keys, so sequence is
@@ -478,14 +568,28 @@ def _diff_list_by_natural_key(
     return records
 
 
-def _filter_key(f: Any) -> Key | None:
-    """Natural key for an adhoc filter — its subject (column name).
+def _filter_key(f: Any) -> NaturalKey | None:
+    """Natural key for an adhoc filter — its subject (column name), refined
+    by operator and then comparator when several filters share a column.
 
-    Users rarely have two filters on the same column; when they do the
-    secondary dimensions (operator, comparator) appear in the record's
-    from/to values so the renderer can disambiguate.
+    A lone filter on ``sales`` is keyed ``"sales"``; ``sales > 1`` next to
+    ``sales < 10`` are keyed ``"sales|>"`` and ``"sales|<"``, so editing
+    the comparator of one still matches it to its predecessor and removing
+    or adding one is recorded against that filter alone (see
+    ``_resolve_keys``).
     """
-    return f.get("subject") if isinstance(f, dict) else None
+    if not isinstance(f, dict):
+        return None
+    subject = f.get("subject")
+    if subject is None or subject == "":
+        return None
+    operator = f.get("operator")
+    comparator = f.get("comparator")
+    return (
+        subject,
+        operator if isinstance(operator, str | int) else str(operator),
+        comparator if isinstance(comparator, str | int) else str(comparator),
+    )
 
 
 def _metric_key(m: Any) -> Key | None:
