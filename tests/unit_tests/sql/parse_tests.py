@@ -1642,6 +1642,25 @@ def test_split_kql(kql: str, expected: list[str]) -> None:
     assert split_kql(kql) == expected
 
 
+def test_split_kql_multiline_string_keeps_prefix() -> None:
+    """
+    Test that `split_kql` keeps the text preceding a multiline string.
+    """
+    statements = split_kql("print program = ```hello```")
+
+    assert statements == ["print program = ```hello```"]
+    assert "print program =" in statements[0]
+
+
+def test_split_kql_multiline_string_keeps_preceding_statement() -> None:
+    """
+    Test that `split_kql` keeps a statement preceding a multiline string.
+    """
+    statements = split_kql("let x = 1; print program = ```he;llo``` | take 2")
+
+    assert statements == ["let x = 1", " print program = ```he;llo``` | take 2"]
+
+
 @pytest.mark.parametrize(
     ("engine", "sql", "expected"),
     [
