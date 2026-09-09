@@ -49,6 +49,32 @@ class MachineAuthProviderTests(SupersetTestCase):
             c["name"] == "session" and c["value"] == "abc123" for c in cookies_added
         )
 
+    def test_authenticate_browser_context_leaves_no_page_open(self):
+        """A priming page, if opened, is closed before auth cookies are injected."""
+        user = self.get_user("admin")
+        provider = machine_auth_provider_factory.instance
+
+        parent = MagicMock()
+        mock_context = parent.context
+        mock_page = parent.page
+        mock_context.new_page.return_value = mock_page
+
+        with patch.object(provider, "get_cookies", return_value={"session": "abc123"}):
+            result = provider.authenticate_browser_context(mock_context, user)
+
+        assert result is mock_context
+        cookies_added = mock_context.add_cookies.call_args[0][0]
+        assert any(
+            c["name"] == "session" and c["value"] == "abc123" for c in cookies_added
+        )
+
+        if mock_context.new_page.called:
+            mock_page.close.assert_called_once()
+            call_names = [call[0] for call in parent.mock_calls]
+            assert call_names.index("page.close") < call_names.index(
+                "context.add_cookies"
+            )
+
     def test_authenticate_browser_context_uses_override(self):
         """authenticate_browser_context calls the override func when configured."""
         user = MagicMock()
