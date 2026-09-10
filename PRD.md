@@ -58,3 +58,11 @@ unchanged.
 ### PRD-OPS-1 Health endpoint
 
 `GET /health` returns HTTP 200 with body `OK` once the app has booted.
+
+## Dependencies
+
+### PRD-DEP-1 Frontend lockfile carries no known-vulnerable brace-expansion
+
+`superset-frontend/package-lock.json` resolves `nx` to 23.1.2 or later within the 23.x line and
+no copy of `brace-expansion` inside the ranges patched by GHSA-rgw5-rvv9-x895; any
+`minimatch@>=10` override that pins `brace-expansion` names 5.0.9 or later.
