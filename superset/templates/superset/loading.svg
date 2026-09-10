@@ -26,7 +26,7 @@
     </path>
   </defs>
   <use href='#morphPath' stroke='rgb(80, 165, 197)' />
-  <use href='#morphPath' stroke='rgb(72, 72, 72)' stroke-dasharray='108 10'>
+  <use href='#morphPath' stroke='rgb(72, 72, 72)' stroke-dasharray='108 10' stroke-dashoffset='0'>
     <animate attributeName='stroke-dashoffset' from='0' to='130' dur='.8s' repeatCount='indefinite' />
   </use>
 </svg>

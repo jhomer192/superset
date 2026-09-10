@@ -2082,6 +2082,7 @@ def test_sanitize_svg_content_preserves_default_spinner():
         'flood-color="rgba(0,0,0,0.3)"',
         'stdDeviation="2"',
         'stroke-dasharray="108 10"',
+        'stroke-dashoffset="0"',
         'from="0"',
         'to="130"',
     ):

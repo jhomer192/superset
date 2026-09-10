@@ -216,6 +216,9 @@ class ChangeRecord:
 
 
 Key = str | int
+# A natural key is a primary component optionally followed by refinements that
+# are only consulted when several items share the same leading components.
+NaturalKey = Key | tuple[Key, ...]
 
 
 def _value_bytes(value: Any) -> int:
@@ -404,7 +407,7 @@ def _diff_list_by_natural_key(
     path_prefix: list[Any],
     from_list: list[Any] | None,
     to_list: list[Any] | None,
-    key_fn: Callable[[Any], Key | None],
+    key_fn: Callable[[Any], NaturalKey | None],
 ) -> list[ChangeRecord]:
     """Diff two lists, matching elements by natural key.
 
@@ -412,22 +415,16 @@ def _diff_list_by_natural_key(
     ``None`` for an item (natural key missing or empty), the item falls
     back to its position as a synthetic key — so insertions in the
     middle of a keyless list still produce sensible records, at the
-    cost of position-dependent identity.
+    cost of position-dependent identity. A tuple key is used at the
+    shortest prefix length that is unique on both sides (see
+    ``_resolve_keys``).
     """
     from_list = from_list or []
     to_list = to_list or []
 
-    def _effective_key(raw: Key | None, idx: int) -> Key:
-        if raw is None or raw == "":
-            return idx
-        return raw
-
-    from_by_key: dict[Key, Any] = {}
-    for idx, item in enumerate(from_list):
-        from_by_key[_effective_key(key_fn(item), idx)] = item
-    to_by_key: dict[Key, Any] = {}
-    for idx, item in enumerate(to_list):
-        to_by_key[_effective_key(key_fn(item), idx)] = item
+    from_keys, to_keys = _resolve_keys(from_list, to_list, key_fn)
+    from_by_key: dict[Key, Any] = dict(zip(from_keys, from_list, strict=True))
+    to_by_key: dict[Key, Any] = dict(zip(to_keys, to_list, strict=True))
 
     records: list[ChangeRecord] = []
     # Preserve `from` order then append `to`-only keys, so sequence is
@@ -478,14 +475,69 @@ def _diff_list_by_natural_key(
     return records
 
 
-def _filter_key(f: Any) -> Key | None:
-    """Natural key for an adhoc filter — its subject (column name).
+def _resolve_keys(
+    from_list: list[Any],
+    to_list: list[Any],
+    key_fn: Callable[[Any], NaturalKey | None],
+) -> tuple[list[Key], list[Key]]:
+    """Turn natural keys into one effective key per item on each side.
 
-    Users rarely have two filters on the same column; when they do the
-    secondary dimensions (operator, comparator) appear in the record's
-    from/to values so the renderer can disambiguate.
+    Keyless items take their position. Tuple keys are truncated to the
+    shortest prefix length at which no two items on the same side share a
+    prefix, so a lone ``sales`` filter keeps the key ``"sales"`` while
+    ``sales > 1`` next to ``sales < 10`` become ``"sales|>"`` and
+    ``"sales|<"``. Items still colliding once the components are exhausted
+    are numbered in order of appearance.
     """
-    return f.get("subject") if isinstance(f, dict) else None
+    sides: list[list[tuple[Key, ...] | None]] = []
+    for items in (from_list, to_list):
+        side: list[tuple[Key, ...] | None] = []
+        for item in items:
+            raw = key_fn(item)
+            components = raw if isinstance(raw, tuple) else (raw,)
+            if not components or components[0] is None or components[0] == "":
+                side.append(None)
+            else:
+                side.append(tuple(c for c in components if c is not None))
+        sides.append(side)
+
+    max_len = max((len(k) for side in sides for k in side if k is not None), default=1)
+    depth = 1
+    while depth < max_len and any(
+        len({k[:depth] for k in side if k is not None})
+        < sum(k is not None for k in side)
+        for side in sides
+    ):
+        depth += 1
+
+    resolved: list[list[Key]] = []
+    for side in sides:
+        seen: dict[Key, int] = {}
+        keys: list[Key] = []
+        for idx, k in enumerate(side):
+            if k is None:
+                keys.append(idx)
+                continue
+            prefix = k[:depth]
+            effective: Key = (
+                prefix[0] if len(prefix) == 1 else "|".join(str(c) for c in prefix)
+            )
+            n = seen.get(effective, 0)
+            seen[effective] = n + 1
+            keys.append(f"{effective}|{n}" if n else effective)
+        resolved.append(keys)
+    return resolved[0], resolved[1]
+
+
+def _filter_key(f: Any) -> NaturalKey | None:
+    """Natural key for an adhoc filter: its subject (column name), refined by
+    operator and then comparator when several filters share a column."""
+    if not isinstance(f, dict):
+        return None
+    subject = f.get("subject")
+    if subject is None or subject == "":
+        return None
+    return (subject, str(f.get("operator")), str(f.get("comparator")))
 
 
 def _metric_key(m: Any) -> Key | None:

@@ -483,6 +483,7 @@ class ChartRestApi(SoftDeleteApiMixin, BaseSupersetModelRestApi):
                 row["extra_editors"] = extra_editors_by_id[row_id]
 
     @expose("/", methods=("GET",))
+    @protect()
     @safe
     @permission_name("get")
     @parse_rison(chart_get_list_schema)

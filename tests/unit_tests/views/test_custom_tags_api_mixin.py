@@ -24,9 +24,13 @@ the public ``tags`` name. Both paths need coverage.
 
 from typing import Any
 
+import prison
 from marshmallow import fields, Schema
 
-from superset.views.custom_tags_api_mixin import CustomTagsOptimizationMixin
+from superset.views.custom_tags_api_mixin import (
+    CustomTagsOptimizationMixin,
+    rewrite_tags_rison_query,
+)
 
 
 class BaseApi:
@@ -107,3 +111,42 @@ def test_pre_get_list_tolerates_missing_result_key() -> None:
 
     assert data == {"count": 0}
     assert api.pre_get_list_calls == 1
+
+
+def test_rewrite_tags_rison_query_rewrites_column_references_only() -> None:
+    q = prison.dumps(
+        {
+            "columns": ["id", "tags.id", "tags.name", "custom_tags.type"],
+            "filters": [
+                {"col": "tags.name", "opr": "eq", "value": "owner:1"},
+                {"col": "dashboard_title", "opr": "ct", "value": "tags.name x"},
+            ],
+            "order_column": "tags.name",
+        }
+    )
+
+    out = prison.loads(rewrite_tags_rison_query(q))
+
+    assert out["columns"] == [
+        "id",
+        "custom_tags.id",
+        "custom_tags.name",
+        "custom_tags.type",
+    ]
+    assert out["filters"][0]["col"] == "custom_tags.name"
+    assert out["filters"][1] == {
+        "col": "dashboard_title",
+        "opr": "ct",
+        "value": "tags.name x",
+    }
+    assert out["order_column"] == "custom_tags.name"
+
+
+def test_rewrite_tags_rison_query_is_idempotent() -> None:
+    once = rewrite_tags_rison_query(prison.dumps({"columns": ["tags.name"]}))
+
+    assert rewrite_tags_rison_query(once) == once
+
+
+def test_rewrite_tags_rison_query_passes_malformed_rison_through() -> None:
+    assert rewrite_tags_rison_query("(columns:!(tags.name") == "(columns:!(tags.name"

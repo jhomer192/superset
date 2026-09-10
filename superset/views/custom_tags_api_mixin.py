@@ -18,8 +18,43 @@
 
 from typing import Any
 
+import prison
 from flask import current_app, request, Response
 from werkzeug.datastructures import ImmutableMultiDict
+
+_TAGS_PREFIX = "tags."
+_CUSTOM_TAGS_PREFIX = "custom_tags."
+
+
+def _rewrite_column(column: Any) -> Any:
+    if isinstance(column, str) and column.startswith(_TAGS_PREFIX):
+        return _CUSTOM_TAGS_PREFIX + column[len(_TAGS_PREFIX) :]
+    return column
+
+
+def rewrite_tags_rison_query(query_str: str) -> str:
+    """Rewrite ``tags.*`` column references in a FAB rison ``q`` to ``custom_tags.*``.
+
+    Only ``columns``, ``select_columns``, ``order_column`` and ``filters[].col``
+    are touched; filter values are left alone. Unparseable rison is returned
+    unchanged so FAB's ``@rison`` decorator still rejects it.
+    """
+    try:
+        parsed = prison.loads(query_str)
+    except prison.decoder.ParserException:
+        return query_str
+    if not isinstance(parsed, dict):
+        return query_str
+    for key in ("columns", "select_columns"):
+        if isinstance(parsed.get(key), list):
+            parsed[key] = [_rewrite_column(col) for col in parsed[key]]
+    if "order_column" in parsed:
+        parsed["order_column"] = _rewrite_column(parsed["order_column"])
+    if isinstance(parsed.get("filters"), list):
+        for filter_ in parsed["filters"]:
+            if isinstance(filter_, dict) and "col" in filter_:
+                filter_["col"] = _rewrite_column(filter_["col"])
+    return prison.dumps(parsed)
 
 
 class CustomTagsOptimizationMixin:
@@ -78,18 +113,15 @@ class CustomTagsOptimizationMixin:
     def get_list(self, **kwargs: Any) -> Response:
         """Override to rewrite request parameters for custom_tags optimization.
 
-        When config is enabled, rewrites 'tags.*' → 'custom_tags.*' in request
-        so FAB can find the columns in list_columns.
+        When config is enabled, rewrites 'tags.*' → 'custom_tags.*' column
+        references in the rison ``q`` so FAB can find the columns in list_columns.
         """
         if self._custom_tags_only:
-            # Parse and rewrite query parameter
             query_str = request.args.get("q", "")
-            if query_str and "tags." in query_str:
-                # Replace 'tags.' with 'custom_tags.' in select_columns
-                modified_query = query_str.replace("tags.id", "custom_tags.id")
-                modified_query = modified_query.replace("tags.name", "custom_tags.name")
-                modified_query = modified_query.replace("tags.type", "custom_tags.type")
-
+            modified_query = (
+                rewrite_tags_rison_query(query_str) if query_str else query_str
+            )
+            if modified_query != query_str:
                 # Temporarily patch request.args
                 modified_args = request.args.copy()
                 modified_args["q"] = modified_query
