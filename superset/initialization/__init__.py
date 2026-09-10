@@ -1180,7 +1180,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         violations = [
             (samesite_key, secure_key)
             for samesite_key, secure_key, samesite, secure in invalid_pairs
-            if isinstance(samesite, str) and samesite == "none" and not secure
+            if isinstance(samesite, str) and samesite.lower() == "none" and not secure
         ]
 
         secure_off = not self.config.get("SESSION_COOKIE_SECURE")
