@@ -57,7 +57,7 @@ def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
     return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
 
 
-@pytest.mark.parametrize("samesite", ["None", "none", "NONE"])
+@pytest.mark.parametrize("samesite", ["None", "none", "NONE", "noNe"])
 def test_samesite_none_without_secure_exits_and_names_both_keys(
     caplog: pytest.LogCaptureFixture, samesite: str
 ) -> None:
@@ -159,11 +159,12 @@ def test_invalid_combination_warns_but_starts_under_is_test(
     assert any("SESSION_COOKIE_SAMESITE" in msg for msg in _warnings(caplog))
 
 
+@pytest.mark.parametrize("ws_samesite", ["None", "none", "NONE", "noNe"])
 def test_websocket_pair_checked_when_enabled(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, ws_samesite: str
 ) -> None:
     initializer = _make_initializer(
-        ws_enabled=True, ws_samesite="None", ws_secure=False
+        ws_enabled=True, ws_samesite=ws_samesite, ws_secure=False
     )
     with (
         caplog.at_level(logging.WARNING, logger="superset.initialization"),
