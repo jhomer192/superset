@@ -1533,6 +1533,11 @@ CSV_EXPORT = {"encoding": "utf-8-sig"}
 # large datasets efficiently.
 CSV_STREAMING_ROW_THRESHOLD = 100000
 
+# CSV Streaming: number of rows fetched and written per chunk by the streaming
+# CSV exports (chart data and SQL Lab). Larger chunks mean fewer round trips
+# to the database at the cost of more memory per chunk.
+CSV_EXPORT_CHUNK_SIZE = 1024
+
 # Excel Options: key/value pairs that will be passed as argument to DataFrame.to_excel
 # method.
 # note: index option should not be overridden

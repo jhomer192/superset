@@ -799,8 +799,7 @@ class ChartDataRestApi(ChartRestApi):
             logger.info("Using expected_rows from frontend: %d", expected_rows)
 
         # Execute streaming command
-        # TODO: Make chunk size configurable via SUPERSET_CONFIG
-        chunk_size = 1024
+        chunk_size = app.config.get("CSV_EXPORT_CHUNK_SIZE", 1024)
         command = StreamingCSVExportCommand(query_context, chunk_size)
         command.validate()
 

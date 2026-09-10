@@ -57,3 +57,35 @@ def test_blank_filename_falls_back_to_default() -> None:
     response = _build_response("...")
     disposition = response.headers["Content-Disposition"]
     assert 'filename="export.csv"' in disposition
+
+
+def _streaming_chunk_size(config_chunk_size: int | None) -> int:
+    """Return the chunk_size the streaming CSV endpoint hands to its command."""
+    from flask import Flask
+
+    from superset.charts.data.api import ChartDataRestApi
+
+    app = Flask(__name__)
+    app.config["CSV_EXPORT"] = {"encoding": "utf-8"}
+    if config_chunk_size is not None:
+        app.config["CSV_EXPORT_CHUNK_SIZE"] = config_chunk_size
+    with (
+        app.app_context(),
+        patch("superset.charts.data.api.StreamingCSVExportCommand") as command_cls,
+    ):
+        command_cls.return_value.run.return_value = lambda: iter([b""])
+        ChartDataRestApi._create_streaming_csv_response(
+            MagicMock(), {"query_context": MagicMock()}, filename="export.csv"
+        )
+    command_cls.assert_called_once()
+    return command_cls.call_args.args[1]
+
+
+def test_streaming_csv_chunk_size_defaults_to_1024() -> None:
+    """Without CSV_EXPORT_CHUNK_SIZE set, the command receives 1024."""
+    assert _streaming_chunk_size(None) == 1024
+
+
+def test_streaming_csv_chunk_size_reads_config() -> None:
+    """CSV_EXPORT_CHUNK_SIZE from app config reaches the export command."""
+    assert _streaming_chunk_size(4096) == 4096
