@@ -610,53 +610,277 @@ def markdown(raw: str, markup_wrap: bool | None = False) -> str:
     return safe
 
 
-def sanitize_svg_content(svg_content: str) -> str:
-    """Basic SVG protection - remove obvious XSS vectors, trust admin input otherwise.
+SAFE_SVG_TAGS = {
+    "svg",
+    "g",
+    "defs",
+    "symbol",
+    "use",
+    "title",
+    "desc",
+    "metadata",
+    "switch",
+    "path",
+    "rect",
+    "circle",
+    "ellipse",
+    "line",
+    "polyline",
+    "polygon",
+    "text",
+    "tspan",
+    "textPath",
+    "linearGradient",
+    "radialGradient",
+    "stop",
+    "pattern",
+    "clipPath",
+    "mask",
+    "marker",
+    "filter",
+    "feBlend",
+    "feColorMatrix",
+    "feComponentTransfer",
+    "feComposite",
+    "feConvolveMatrix",
+    "feDiffuseLighting",
+    "feDisplacementMap",
+    "feDistantLight",
+    "feDropShadow",
+    "feFlood",
+    "feFuncA",
+    "feFuncB",
+    "feFuncG",
+    "feFuncR",
+    "feGaussianBlur",
+    "feMerge",
+    "feMergeNode",
+    "feMorphology",
+    "feOffset",
+    "feSpecularLighting",
+    "feSpotLight",
+    "feTile",
+    "feTurbulence",
+    "animate",
+    "animateMotion",
+    "animateTransform",
+    "set",
+    "mpath",
+}
 
-    Minimal protection approach that removes scripts and javascript: URLs while
-    preserving all legitimate SVG features. Assumes admin-provided content.
+# Elements whose text content must be dropped along with the element itself.
+# nh3 matches these names case-sensitively against the parsed SVG tag name.
+SVG_CLEAN_CONTENT_TAGS = {"foreignObject", "script", "style"}
+
+SAFE_SVG_ATTRIBUTES = {
+    # core / presentation
+    "id",
+    "class",
+    "lang",
+    "xml:space",
+    "xmlns",
+    "xmlns:xlink",
+    "version",
+    "baseProfile",
+    "viewBox",
+    "preserveAspectRatio",
+    "overflow",
+    "transform",
+    "opacity",
+    "display",
+    "visibility",
+    "color",
+    "fill",
+    "fill-opacity",
+    "fill-rule",
+    "stroke",
+    "stroke-width",
+    "stroke-opacity",
+    "stroke-linecap",
+    "stroke-linejoin",
+    "stroke-miterlimit",
+    "stroke-dasharray",
+    "stroke-dashoffset",
+    "clip-path",
+    "clip-rule",
+    "mask",
+    "filter",
+    "paint-order",
+    "vector-effect",
+    "shape-rendering",
+    "text-rendering",
+    "image-rendering",
+    "color-interpolation",
+    "color-interpolation-filters",
+    # geometry
+    "x",
+    "y",
+    "width",
+    "height",
+    "dx",
+    "dy",
+    "cx",
+    "cy",
+    "r",
+    "rx",
+    "ry",
+    "x1",
+    "y1",
+    "x2",
+    "y2",
+    "d",
+    "points",
+    "pathLength",
+    # references
+    "href",
+    "xlink:href",
+    # text
+    "font-family",
+    "font-size",
+    "font-weight",
+    "font-style",
+    "font-variant",
+    "text-anchor",
+    "text-decoration",
+    "dominant-baseline",
+    "alignment-baseline",
+    "baseline-shift",
+    "letter-spacing",
+    "word-spacing",
+    "writing-mode",
+    "startOffset",
+    "method",
+    "spacing",
+    "lengthAdjust",
+    "textLength",
+    "rotate",
+    # gradients / patterns / clip / mask / marker
+    "offset",
+    "stop-color",
+    "stop-opacity",
+    "gradientUnits",
+    "gradientTransform",
+    "spreadMethod",
+    "fx",
+    "fy",
+    "fr",
+    "patternUnits",
+    "patternContentUnits",
+    "patternTransform",
+    "clipPathUnits",
+    "maskUnits",
+    "maskContentUnits",
+    "markerWidth",
+    "markerHeight",
+    "markerUnits",
+    "refX",
+    "refY",
+    "orient",
+    # filters
+    "filterUnits",
+    "primitiveUnits",
+    "in",
+    "in2",
+    "result",
+    "stdDeviation",
+    "flood-color",
+    "flood-opacity",
+    "lighting-color",
+    "mode",
+    "type",
+    "values",
+    "tableValues",
+    "slope",
+    "intercept",
+    "amplitude",
+    "exponent",
+    "k1",
+    "k2",
+    "k3",
+    "k4",
+    "operator",
+    "order",
+    "kernelMatrix",
+    "divisor",
+    "bias",
+    "targetX",
+    "targetY",
+    "edgeMode",
+    "kernelUnitLength",
+    "surfaceScale",
+    "diffuseConstant",
+    "specularConstant",
+    "specularExponent",
+    "azimuth",
+    "elevation",
+    "pointsAtX",
+    "pointsAtY",
+    "pointsAtZ",
+    "limitingConeAngle",
+    "radius",
+    "baseFrequency",
+    "numOctaves",
+    "seed",
+    "stitchTiles",
+    "scale",
+    "xChannelSelector",
+    "yChannelSelector",
+    # animation (SMIL)
+    "attributeName",
+    "attributeType",
+    "begin",
+    "dur",
+    "end",
+    "min",
+    "max",
+    "restart",
+    "repeatCount",
+    "repeatDur",
+    "calcMode",
+    "keyTimes",
+    "keySplines",
+    "keyPoints",
+    "from",
+    "to",
+    "by",
+    "additive",
+    "accumulate",
+    "path",
+    # conditional processing
+    "requiredExtensions",
+    "systemLanguage",
+}
+
+
+def sanitize_svg_content(svg_content: str) -> str:
+    """Sanitize SVG markup with an element/attribute allowlist.
+
+    Everything not on the allowlist is dropped: scripting, event handlers,
+    ``javascript:``/``data:`` URLs, ``<foreignObject>`` (including its text),
+    embedded HTML and CSS. The allowlist covers static shapes, text, gradients,
+    filters and SMIL animation so themed brand spinners keep rendering.
+
+    nh3 validates ``<animate>``/``<set>`` against the target element's
+    attribute allowlist and URL scheme rules, so animating ``on*`` handlers or
+    ``href`` to a script URL is rejected as well.
 
     Args:
         svg_content: Raw SVG content string
 
     Returns:
-        str: SVG content with obvious XSS vectors removed
+        str: Sanitized SVG content, or an empty string for blank input
     """
     if not svg_content or not svg_content.strip():
         return ""
 
-    # Minimal protection: remove obvious malicious content, preserve all SVG features
-    # The closing tag pattern tolerates attributes/whitespace after "script"
-    # (e.g. "</script foo>"), which browsers still parse as a valid closer.
-    content = re.sub(
-        r"<script\b[^>]*>.*?</script\b[^>]*>",
-        "",
+    # pylint: disable=no-member
+    return nh3.clean(
         svg_content,
-        flags=re.IGNORECASE | re.DOTALL,
+        tags=SAFE_SVG_TAGS,
+        clean_content_tags=SVG_CLEAN_CONTENT_TAGS,
+        attributes={"*": SAFE_SVG_ATTRIBUTES},
+        link_rel=None,
     )
-    # Second pass: an unterminated <script ...> opener has no matching
-    # closer, so browsers treat everything after it as script content
-    # through end-of-file. Drop the opener and the remainder of the
-    # content with it, rather than leaving the payload text behind.
-    content = re.sub(r"<script\b[^>]*>.*", "", content, flags=re.IGNORECASE | re.DOTALL)
-    # Drop any orphaned closing </script ...> fragment too.
-    content = re.sub(r"</script\b[^>]*>?", "", content, flags=re.IGNORECASE)
-    content = re.sub(r"javascript:", "", content, flags=re.IGNORECASE)
-    content = re.sub(r"data:[^;]*;[^,]*,.*javascript", "", content, flags=re.IGNORECASE)
-
-    # Remove event handlers (simple catch-all approach)
-    content = re.sub(r"\bon\w+\s*=", "", content, flags=re.IGNORECASE)
-
-    # Remove other suspicious patterns
-    content = re.sub(
-        r"<iframe[^>]*>.*?</iframe>", "", content, flags=re.IGNORECASE | re.DOTALL
-    )
-    content = re.sub(
-        r"<object[^>]*>.*?</object>", "", content, flags=re.IGNORECASE | re.DOTALL
-    )
-    content = re.sub(r"<embed[^>]*>", "", content, flags=re.IGNORECASE)
-
-    return content
 
 
 def sanitize_url(url: str) -> str:
