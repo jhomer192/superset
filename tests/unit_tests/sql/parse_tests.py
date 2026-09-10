@@ -5775,6 +5775,15 @@ def test_kustokql_statement_check_tables_present() -> None:
         ),
         ("'test'", [(KQLTokenType.STRING, "'test'")]),
         ("```test```", [(KQLTokenType.STRING, "```test```")]),
+        # Text before a multiline string is tokenized, not dropped
+        (
+            "print ```a;b```",
+            [
+                (KQLTokenType.WORD, "print"),
+                (KQLTokenType.WHITESPACE, " "),
+                (KQLTokenType.STRING, "```a;b```"),
+            ],
+        ),
         # Double-quoted strings
         ('"hello"', [(KQLTokenType.STRING, '"hello"')]),
         # Single-quoted string with escaped quote
