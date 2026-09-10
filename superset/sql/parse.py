@@ -1793,6 +1793,8 @@ def tokenize_kql(kql: str) -> list[tuple[KQLTokenType, str]]:
                 )
                 buffer = ch
             elif ch == "`" and script[i - 2 : i] == "``":
+                if prefix := buffer[:-2]:
+                    tokens.extend(classify_non_string_kql(prefix))
                 state = KQLSplitState.INSIDE_MULTILINE_STRING
                 buffer = "```"
             else:
