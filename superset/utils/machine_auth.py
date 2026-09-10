@@ -63,7 +63,10 @@ class MachineAuthProvider:
 
         # Setting cookies requires doing a request first
         page = browser_context.new_page()
-        page.goto(headless_url("/login/"))
+        try:
+            page.goto(headless_url("/login/"))
+        finally:
+            page.close()
 
         cookies = self.get_cookies(user)
 
