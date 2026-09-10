@@ -1150,6 +1150,71 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         )
         sys.exit(1)
 
+    def check_cookie_security(self) -> None:
+        """Enforce the documented ``SameSite=None`` requires ``Secure`` invariant.
+
+        Browsers reject a ``Set-Cookie`` carrying ``SameSite=None`` without
+        ``Secure``, so a session cookie configured that way is silently dropped
+        and login never completes. Refuse to start on that combination for the
+        session cookie and, when ``WEBSOCKET_ENABLE`` is on, for the websocket
+        JWT cookie. Separately warn, without exiting, when the deployment looks
+        like it serves HTTPS but ``SESSION_COOKIE_SECURE`` is off.
+        """
+        invalid_pairs = [
+            (
+                "SESSION_COOKIE_SAMESITE",
+                "SESSION_COOKIE_SECURE",
+                self.config.get("SESSION_COOKIE_SAMESITE"),
+                self.config.get("SESSION_COOKIE_SECURE"),
+            )
+        ]
+        if self.config.get("WEBSOCKET_ENABLE"):
+            invalid_pairs.append(
+                (
+                    "WEBSOCKET_JWT_COOKIE_SAMESITE",
+                    "WEBSOCKET_JWT_COOKIE_SECURE",
+                    self.config.get("WEBSOCKET_JWT_COOKIE_SAMESITE"),
+                    self.config.get("WEBSOCKET_JWT_COOKIE_SECURE"),
+                )
+            )
+        violations = [
+            (samesite_key, secure_key)
+            for samesite_key, secure_key, samesite, secure in invalid_pairs
+            if isinstance(samesite, str) and samesite.title() == "None" and not secure
+        ]
+
+        secure_off = not self.config.get("SESSION_COOKIE_SECURE")
+        looks_https = self.superset_app.config.get(
+            "PREFERRED_URL_SCHEME"
+        ) == "https" or bool(self.config.get("ENABLE_PROXY_FIX"))
+        if secure_off and looks_https:
+            self._log_config_warning(
+                "SESSION_COOKIE_SECURE is off but this deployment appears to "
+                "serve HTTPS (PREFERRED_URL_SCHEME is 'https' or ENABLE_PROXY_FIX "
+                "is on).\n"
+                "The session cookie can be sent over plain HTTP. Set in "
+                "superset_config.py:\n"
+                "  SESSION_COOKIE_SECURE = True"
+            )
+
+        if not violations:
+            return
+        for samesite_key, secure_key in violations:
+            self._log_config_warning(
+                f"{samesite_key} is 'None' but {secure_key} is not True.\n"
+                "Browsers reject SameSite=None cookies that are not also marked "
+                "Secure, so this cookie is silently dropped and login cannot "
+                "complete.\n"
+                "Set in superset_config.py:\n"
+                f"  {secure_key} = True"
+            )
+        if self.superset_app.debug or self.superset_app.config["TESTING"] or is_test():
+            return
+        logger.error(
+            "Refusing to start: SameSite=None cookie configured without Secure"
+        )
+        sys.exit(1)
+
     def check_encryption_engine(self) -> None:
         """Warn when app-encrypted fields use the legacy AES-CBC engine.
 
@@ -1334,6 +1399,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         self.configure_feature_flags()
         self.check_guest_token_secret()
         self.check_websocket_secret()
+        self.check_cookie_security()
         self.check_encryption_engine()
         self.configure_db_encrypt()
         self.setup_db()
